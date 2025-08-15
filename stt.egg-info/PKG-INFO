@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: stt
-Version: 0.1.1
+Version: 0.1.2
 Summary: Speech-to-Text tool using Whisper, PyAudio, and VAD.
 Author-email: Advik Mathur <pranit.advik@gmail.com>
 Requires-Python: >=3.9
