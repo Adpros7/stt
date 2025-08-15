@@ -6,7 +6,7 @@ import webrtcvad
 import keyboard as kb
 import collections
 import asyncio
-
+import time
 
 class STT:
     def __init__(self, model: str = "base", aggressive: int = 2, chunk_duration_ms: int = 30):
@@ -36,21 +36,20 @@ class STT:
     async def _record_and_transcribe(self, frames):
         loop = asyncio.get_running_loop()
         filename = self._save_wav_temp(frames)
-        # Run Whisper in thread to avoid blocking
         result = await loop.run_in_executor(None, self.models.transcribe, filename)
         return result["text"]
 
     async def record_audio_sec_stt(self, duration=5):
         loop = asyncio.get_running_loop()
         frames = await loop.run_in_executor(None, lambda: [
-            self.stream.read(self.chunk) for _ in range(int(self.rate / self.chunk * duration))
+            self.stream.read(self.chunk, exception_on_overflow=False) 
+            for _ in range(int(self.rate / self.chunk * duration))
         ])
         return await self._record_and_transcribe(frames)
 
     async def record_audio_vad_stt(self):
         loop = asyncio.get_running_loop()
-        ring_buffer = collections.deque(
-            maxlen=int(self.rate / self.chunk * 0.5))
+        ring_buffer = collections.deque(maxlen=int(self.rate / self.chunk * 0.5))
         frames = []
         triggered = False
         silence_chunks = 0
@@ -59,7 +58,7 @@ class STT:
         print("Listening for speech...")
 
         while True:
-            data = await loop.run_in_executor(None, self.stream.read, self.chunk)
+            data = await loop.run_in_executor(None, lambda: self.stream.read(self.chunk, exception_on_overflow=False))
             is_speech = self.vad.is_speech(data, self.rate)
 
             if not triggered:
@@ -79,6 +78,8 @@ class STT:
                 else:
                     silence_chunks = 0
 
+            await asyncio.sleep(0)
+
         return await self._record_and_transcribe(frames)
 
     async def record_audio_keyboard_stt(self, key: str = "space"):
@@ -89,15 +90,15 @@ class STT:
         print("Recording...")
         frames = []
 
-        def read_frame():
+        def read_frames():
             while not kb.is_pressed(key):
-                frames.append(self.stream.read(self.chunk))
+                frames.append(self.stream.read(self.chunk, exception_on_overflow=False))
 
-        await loop.run_in_executor(None, read_frame)
+        await loop.run_in_executor(None, read_frames)
         print("Stopped recording.")
         return await self._record_and_transcribe(frames)
 
-    async def stt(self, text: str):
+    async def stt(self, audio_file: str):
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, self.models.transcribe, text)
+        result = await loop.run_in_executor(None, self.models.transcribe, audio_file)
         return result["text"]
