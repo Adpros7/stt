@@ -1,6 +1,6 @@
 [project]
 name = "stt"
-version = "0.1.2"
+version = "0.1.3"
 description = "Speech-to-Text tool using Whisper, PyAudio, and VAD."
 authors = [
     { name="Advik Mathur", email="pranit.advik@gmail.com" }
