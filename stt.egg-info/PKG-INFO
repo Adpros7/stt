@@ -1,8 +1,8 @@
 Metadata-Version: 2.4
 Name: stt
-Version: 0.1.0
+Version: 0.1.1
 Summary: Speech-to-Text tool using Whisper, PyAudio, and VAD.
-Author-email: Your Name <you@example.com>
+Author-email: Advik Mathur <pranit.advik@gmail.com>
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: whisper

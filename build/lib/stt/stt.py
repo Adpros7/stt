@@ -9,9 +9,9 @@ import time
 
 
 class STT:
-    def __init__(self):
+    def __init__(self, model: str="base", aggressive: int=2, chunk_duration_ms: int=30):
         self.rate = 16000
-        self.chunk_duration_ms = 30  # pick 10, 20, or 30 ms
+        self.chunk_duration_ms = chunk_duration_ms  # pick 10, 20, or 30 ms
         self.chunk = int(self.rate * self.chunk_duration_ms /
                          1000)  # samples per frame
         self.p = pyaudio.PyAudio()
@@ -20,8 +20,8 @@ class STT:
                                   rate=self.rate,
                                   input=True,
                                   frames_per_buffer=self.chunk)
-        self.vad = webrtcvad.Vad(2)  # 0=least aggressive, 3=most aggressive
-        self.models = whisper.load_model("base")
+        self.vad = webrtcvad.Vad(aggressive)  # 0=least aggressive, 3=most aggressive
+        self.models = whisper.load_model(model)
 
     def _save_wav_temp(self, frames):
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
