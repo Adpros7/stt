@@ -1,3 +1,4 @@
+from typing import Literal
 import whisper
 import pyaudio
 import wave
@@ -9,7 +10,7 @@ import asyncio
 import time
 
 class STT:
-    def __init__(self, model: str = "base", aggressive: int = 2, chunk_duration_ms: int = 30):
+    def __init__(self, model: Literal['tiny.en', 'tiny', 'base.en', 'base', 'small.en', 'small', 'medium.en', 'medium', 'large-v1', 'large-v2', 'large-v3', 'large', 'large-v3-turbo', 'turbo'] = "base", aggressive: int = 2, chunk_duration_ms: int = 30):
         self.rate = 16000
         self.chunk_duration_ms = chunk_duration_ms
         self.chunk = int(self.rate * self.chunk_duration_ms / 1000)
