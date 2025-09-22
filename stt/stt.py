@@ -148,12 +148,14 @@ class STT:
 
     # ---------- public APIs ----------
 
-    def record_for_seconds(self, duration=5) -> str:
+    def record_for_seconds(self, duration=5, log: bool = False) -> str:
+        if log: print(f"Recording for {duration} seconds...")
         total_chunks = max(1, int((duration * 1000) / self.chunk_ms))
         frames = [
             self.stream.read(self.chunk, exception_on_overflow=False)
             for _ in range(total_chunks)
         ]
+        print("Done.")
         return self._transcribe_frames(frames)
 
     def record_with_keyboard(self, key="space", log: bool = False) -> str:
