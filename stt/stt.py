@@ -1,4 +1,5 @@
-from typing import Literal
+import threading
+from typing import Callable, Literal
 import os
 import time
 import wave
@@ -9,6 +10,7 @@ import logging
 import pyaudio
 import webrtcvad
 import keyboard as kb
+from syntaxmod.general import wait_until
 
 # Quiet the spam
 warnings.filterwarnings("ignore")
@@ -205,6 +207,60 @@ class STT:
                         if log: print("Speech ended.")
                         break
         return self._transcribe_frames(frames)
+    
+    
+    def record_with_callback_or_bool(self, callback_or_bool: Callable[..., bool] | bool, log: bool = False) -> str:
+        if isinstance(callback_or_bool, bool):
+            def go():
+                if log:
+                    print(f"Waiting for callback ...")
+                
+                wait_until(callback_or_bool)
+
+                if log:
+                    print("Recording... Press key again to stop.")
+                frames, recorded = [], 0
+                while True:
+                    data = self.stream.read(self.chunk, exception_on_overflow=False)
+                    frames.append(data)
+                    recorded += 1
+                    if recorded < self.min_record_chunks:
+                        continue
+                    if callback_or_bool:
+                        if log:
+                            print("Stopped.")
+                        break
+                return self._transcribe_frames(frames)
+            
+        else:
+            def go():
+                if log:
+                    print(f"Waiting for callback ...")
+
+                wait_until(callback_or_bool)
+
+                if log:
+                    print("Recording... Press key again to stop.")
+                frames, recorded = [], 0
+                while True:
+                    data = self.stream.read(
+                        self.chunk, exception_on_overflow=False)
+                    frames.append(data)
+                    recorded += 1
+                    if recorded < self.min_record_chunks:
+                        continue
+                    if callback_or_bool:
+                        if log:
+                            print("Stopped.")
+                        break
+                return self._transcribe_frames(frames)
+            
+        try:
+            threading.Thread(target=go, daemon=True).start()
+        
+        except Exception as e:
+            print(e)
+                
 
     def transcribe_file(self, audio_file: str) -> str:
         if self.backend == "faster":
