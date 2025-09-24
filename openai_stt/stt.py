@@ -1,7 +1,9 @@
+import re
 import threading
 from typing import Callable, Literal
 import os
 import time
+from unittest import result
 import wave
 import tempfile
 import collections
@@ -11,6 +13,7 @@ import pyaudio
 import webrtcvad
 import keyboard as kb
 from syntaxmod.general import wait_until
+from concurrent.futures import Future, ThreadPoolExecutor
 
 # Quiet the spam
 warnings.filterwarnings("ignore")
@@ -115,7 +118,6 @@ class STT:
                 temperature=0.0,
                 vad_filter=False,
                 language="en",
-                progress_bar=False
             )
         except TypeError:
             segments, _ = self.model.transcribe(
@@ -131,7 +133,6 @@ class STT:
         # Only use options the real whisper accepts
         result = self.model.transcribe(
             filename,
-            verbose=False,
             temperature=0.0,
             condition_on_previous_text=False,
             word_timestamps=False,
@@ -254,12 +255,22 @@ class STT:
                             print("Stopped.")
                         break
                 return self._transcribe_frames(frames)
-            
+
         try:
-            threading.Thread(target=go, daemon=True).start()
+            bob = ""
+            def caller(obj: Future):
+                global bob
+                bob = obj.result()
+                
+            thr = ThreadPoolExecutor(max_workers=1).submit(go)
+            thr.add_done_callback(caller)
         
         except Exception as e:
             print(e)
+            
+        finally:
+            return bob
+        
                 
 
     def transcribe_file(self, audio_file: str) -> str:

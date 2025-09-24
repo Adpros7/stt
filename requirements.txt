@@ -1,0 +1,7 @@
+pyaudio
+webrtcvad
+keyboard
+syntaxmod
+whisper
+faster-whisper
+torch

@@ -1,7 +1,4 @@
-build/lib/stt/stt.py
-stt.egg-info/PKG-INFO
-build/lib/stt/stt.py
-/build/lib/stt/stt.py
-/stt.egg-info/PKG-INFO
-stt.egg-info/PKG-INFO
-/stt.egg-info
+
+/.venv
+/dist
+/openai_stt.egg-info
