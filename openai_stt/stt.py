@@ -1,6 +1,6 @@
 import re
 import threading
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 import os
 import time
 from unittest import result
@@ -210,7 +210,7 @@ class STT:
         return self._transcribe_frames(frames)
     
     
-    def record_with_callback_or_bool(self, callback_or_bool: Callable[..., bool] | bool, log: bool = False) -> str:
+    def record_with_callback_or_bool(self, callback_or_bool: Callable[..., Any] | bool, log: bool = False) -> str:
         if isinstance(callback_or_bool, bool):
             def go():
                 if log:

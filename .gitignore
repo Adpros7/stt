@@ -1,4 +1,5 @@
-
+uv.lock
 /.venv
 /dist
 /openai_stt.egg-info
+/build

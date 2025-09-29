@@ -1,6 +1,6 @@
 [project]
 name = "openai_stt"
-version = "0.1.5"
+version = "0.1.7.1"
 description = "Speech-to-Text tool using Whisper, PyAudio, and VAD."
 authors = [
     { name="Advik Mathur", email="pranit.advik@gmail.com" }
