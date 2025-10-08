@@ -14,6 +14,7 @@ import webrtcvad
 import keyboard as kb
 from syntaxmod.general import wait_until
 from concurrent.futures import Future, ThreadPoolExecutor
+from openai import OpenAI
 
 # Quiet the spam
 warnings.filterwarnings("ignore")
@@ -24,30 +25,47 @@ for name in ["whisper", "transformers", "numba"]:
 # Try faster-whisper first
 _USE_FASTER = True
 try:
-    from faster_whisper import WhisperModel as FWModel # type: ignore
+    from faster_whisper import WhisperModel as FWModel  # type: ignore
 except Exception:
     _USE_FASTER = False
     import whisper
+
     try:
         import torch
+
         _HAS_CUDA = torch.cuda.is_available()
     except Exception:
         _HAS_CUDA = False
 
 
 class STT:
+
     def __init__(
         self,
         model: Literal[
-            'tiny.en', 'tiny', 'base.en', 'base', 'small.en', 'small',
-            'medium.en', 'medium', 'large-v1', 'large-v2', 'large-v3',
-            'large', 'large-v3-turbo', 'turbo'
+            "tiny.en",
+            "tiny",
+            "base.en",
+            "base",
+            "small.en",
+            "small",
+            "medium.en",
+            "medium",
+            "large-v1",
+            "large-v2",
+            "large-v3",
+            "large",
+            "large-v3-turbo",
+            "turbo",
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe",
         ] = "base",
         aggressive: int = 2,
         chunk_duration_ms: int = 30,
         preroll_ms: int = 300,
         tail_silence_ms: int = 600,
-        min_record_ms: int = 400
+        min_record_ms: int = 400,
     ):
         assert chunk_duration_ms in (10, 20, 30)
         self.rate = 16000
@@ -64,7 +82,7 @@ class STT:
             channels=1,
             rate=self.rate,
             input=True,
-            frames_per_buffer=self.chunk
+            frames_per_buffer=self.chunk,
         )
 
         # vad
@@ -78,16 +96,14 @@ class STT:
                 device="cpu",
                 compute_type="int8",
                 cpu_threads=max(2, os.cpu_count() or 4),
-                download_root=os.path.join(
-                    tempfile.gettempdir(), "whisper_models")
+                download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
             )
         else:
             device = "cuda" if (_HAS_CUDA) else "cpu"
             self.model = whisper.load_model(
                 model,
-                download_root=os.path.join(
-                    tempfile.gettempdir(), "whisper_models"),
-                device=device
+                download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
+                device=device,
             )
 
     def close(self):
@@ -121,13 +137,9 @@ class STT:
             )
         except TypeError:
             segments, _ = self.model.transcribe(
-                filename,
-                beam_size=1,
-                temperature=0.0,
-                vad_filter=False,
-                language="en"
+                filename, beam_size=1, temperature=0.0, vad_filter=False, language="en"
             )
-        return "".join(seg.text for seg in segments).strip() # type: ignore
+        return "".join(seg.text for seg in segments).strip()  # type: ignore
 
     def _whisper_transcribe_file(self, filename: str) -> str:
         # Only use options the real whisper accepts
@@ -136,9 +148,9 @@ class STT:
             temperature=0.0,
             condition_on_previous_text=False,
             word_timestamps=False,
-            language="en"
+            language="en",
         )
-        return result.get("text", "").strip() # type: ignore
+        return result.get("text", "").strip()  # type: ignore
 
     def _transcribe_frames(self, frames) -> str:
         if not frames:
@@ -152,7 +164,8 @@ class STT:
     # ---------- public APIs ----------
 
     def record_for_seconds(self, duration=5, log: bool = False) -> str:
-        if log: print(f"Recording for {duration} seconds...")
+        if log:
+            print(f"Recording for {duration} seconds...")
         total_chunks = max(1, int((duration * 1000) / self.chunk_ms))
         frames = [
             self.stream.read(self.chunk, exception_on_overflow=False)
@@ -162,12 +175,14 @@ class STT:
         return self._transcribe_frames(frames)
 
     def record_with_keyboard(self, key="space", log: bool = False) -> str:
-        if log: print(f"Press {key} to start. Release to begin recording.")
+        if log:
+            print(f"Press {key} to start. Release to begin recording.")
         kb.wait(key)
         while kb.is_pressed(key):
             time.sleep(0.01)
 
-        if log: print("Recording... Press key again to stop.")
+        if log:
+            print("Recording... Press key again to stop.")
         frames, recorded = [], 0
         while True:
             data = self.stream.read(self.chunk, exception_on_overflow=False)
@@ -178,14 +193,16 @@ class STT:
             if kb.is_pressed(key):
                 while kb.is_pressed(key):
                     time.sleep(0.01)
-                if log: print("Stopped.")
+                if log:
+                    print("Stopped.")
                 break
         return self._transcribe_frames(frames)
 
     def record_with_vad(self, log: bool = False) -> str:
         frames, ring = [], collections.deque(maxlen=self.preroll_chunks)
         triggered, silence, recorded = False, 0, 0
-        if log: print("Listening...")
+        if log:
+            print("Listening...")
         while True:
             data = self.stream.read(self.chunk, exception_on_overflow=False)
             is_speech = self.vad.is_speech(data, self.rate)
@@ -196,7 +213,8 @@ class STT:
                     triggered = True
                     frames.extend(ring)
                     ring.clear()
-                    if log: print("Speech started.")
+                    if log:
+                        print("Speech started.")
             else:
                 frames.append(data)
                 recorded += 1
@@ -204,18 +222,24 @@ class STT:
                     silence = 0
                 else:
                     silence += 1
-                    if recorded >= self.min_record_chunks and silence > self.tail_silence_chunks:
-                        if log: print("Speech ended.")
+                    if (
+                        recorded >= self.min_record_chunks
+                        and silence > self.tail_silence_chunks
+                    ):
+                        if log:
+                            print("Speech ended.")
                         break
         return self._transcribe_frames(frames)
-    
-    
-    def record_with_callback_or_bool(self, callback_or_bool: Callable[..., Any] | bool, log: bool = False) -> str:
+
+    def record_with_callback_or_bool(
+        self, callback_or_bool: Callable[..., Any] | bool, log: bool = False
+    ) -> str:
         if isinstance(callback_or_bool, bool):
+
             def go():
                 if log:
                     print(f"Waiting for callback ...")
-                
+
                 wait_until(callback_or_bool)
 
                 if log:
@@ -232,8 +256,9 @@ class STT:
                             print("Stopped.")
                         break
                 return self._transcribe_frames(frames)
-            
+
         else:
+
             def go():
                 if log:
                     print(f"Waiting for callback ...")
@@ -244,8 +269,7 @@ class STT:
                     print("Recording... Press key again to stop.")
                 frames, recorded = [], 0
                 while True:
-                    data = self.stream.read(
-                        self.chunk, exception_on_overflow=False)
+                    data = self.stream.read(self.chunk, exception_on_overflow=False)
                     frames.append(data)
                     recorded += 1
                     if recorded < self.min_record_chunks:
@@ -258,26 +282,41 @@ class STT:
 
         try:
             bob = ""
+
             def caller(obj: Future):
                 global bob
                 bob = obj.result()
-                
+
             thr = ThreadPoolExecutor(max_workers=1).submit(go)
             thr.add_done_callback(caller)
-        
+
         except Exception as e:
             print(e)
-            
+
         finally:
             return bob
-        
-                
 
     def transcribe_file(self, audio_file: str) -> str:
         if self.backend == "faster":
             return self._fw_transcribe_file(audio_file)
         else:
             return self._whisper_transcribe_file(audio_file)
+
+
+class API_STT(STT):
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: Literal[
+            "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"
+        ] = "whisper-1",
+    ):
+        key = api_key if isinstance(api_key, str) else os.getenv("OPENAI_API_KEY")
+        if key is None:
+            raise Exception("Missing OPENAI_API_KEY")
+        self.client = OpenAI(api_key=key)
+        self.model = model
 
 
 if __name__ == "__main__":

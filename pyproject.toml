@@ -16,6 +16,8 @@ dependencies = [
     "faster-whisper>=1.2.0",
     "torch>=2.8.0",
     "openai-whisper>=20250625",
+    "openai",
+    "whisper>=1.1.10",
 ]
 
 [tool.setuptools]
