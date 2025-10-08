@@ -1,10 +1,8 @@
 [project]
 name = "openai_stt"
-version = "0.1.7.2"
+version = "2"
 description = "Speech-to-Text tool using Whisper, PyAudio, and VAD."
-authors = [
-    { name="Advik Mathur", email="pranit.advik@gmail.com" }
-]
+authors = { name="Advik Mathur", email="pranit.advik@gmail.com" }
 readme = "README.md"
 requires-python = ">=3.13"
 
@@ -13,12 +11,21 @@ dependencies = [
     "webrtcvad",
     "keyboard",
     "syntaxmod",
-    "faster-whisper>=1.2.0",
-    "torch>=2.8.0",
-    "openai-whisper>=20250625",
+    "whisper",
+    "faster-whisper",
+    "torch",
     "openai",
-    "whisper>=1.1.10",
+    "setuptools",
 ]
-
 [tool.setuptools]
 packages = ["openai_stt"]
+
+
+
+
+
+
+
+
+
+
