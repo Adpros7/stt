@@ -1,19 +1,16 @@
-import re
-import threading
 from typing import Any, Callable, Literal
 import os
 import time
-from unittest import result
 import wave
 import tempfile
 import collections
+from collections.abc import Iterable
 import warnings
 import logging
 import pyaudio
 import webrtcvad
 import keyboard as kb
 from syntaxmod.general import wait_until
-from concurrent.futures import Future, ThreadPoolExecutor
 from openai import OpenAI
 
 # Quiet the spam
@@ -242,6 +239,67 @@ class STT:
         resolved_mode = self._resolve_transcription_mode(mode)
         return self._transcribe_file_with_mode(filename, resolved_mode)
 
+    def _collect_frames(
+        self,
+        *,
+        min_appended_chunks: int | None = None,
+        max_read_chunks: int | None = None,
+        stop_condition: Callable[[dict[str, Any]], bool] | None = None,
+        on_chunk: Callable[[bytes, list[bytes], dict[str, Any]], bytes | Iterable[bytes] | None]
+        | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[bytes]:
+        frames: list[bytes] = []
+        ctx = dict(context or {})
+        ctx.setdefault("read_chunks", 0)
+        ctx.setdefault("appended_chunks", 0)
+
+        min_required = (
+            self.min_record_chunks if min_appended_chunks is None else min_appended_chunks
+        )
+
+        while True:
+            data = self.stream.read(self.chunk, exception_on_overflow=False)
+            ctx["read_chunks"] += 1
+
+            result = on_chunk(data, frames, ctx) if on_chunk else data
+
+            appended = 0
+            if result is None:
+                pass
+            elif isinstance(result, (bytes, bytearray)):
+                frames.append(bytes(result))
+                appended = 1
+            elif isinstance(result, Iterable):
+                new_frames: list[bytes] = []
+                for chunk in result:
+                    if not isinstance(chunk, (bytes, bytearray)):
+                        raise TypeError(
+                            "on_chunk must return bytes or an iterable of bytes, got"
+                            f" {type(chunk)!r}"
+                        )
+                    new_frames.append(bytes(chunk))
+                frames.extend(new_frames)
+                appended = len(new_frames)
+            else:
+                raise TypeError(
+                    "on_chunk must return bytes, an iterable of bytes, or None, got"
+                    f" {type(result)!r}"
+                )
+
+            ctx["appended_chunks"] += appended
+
+            if max_read_chunks is not None and ctx["read_chunks"] >= max_read_chunks:
+                break
+
+            if ctx["appended_chunks"] < min_required:
+                continue
+
+            if stop_condition and stop_condition(ctx):
+                break
+
+        return frames
+
     # ---------- public APIs ----------
 
     def record_for_seconds(
@@ -253,10 +311,7 @@ class STT:
         if log:
             print(f"Recording for {duration} seconds...")
         total_chunks = max(1, int((duration * 1000) / self.chunk_ms))
-        frames = [
-            self.stream.read(self.chunk, exception_on_overflow=False)
-            for _ in range(total_chunks)
-        ]
+        frames = self._collect_frames(max_read_chunks=total_chunks, min_appended_chunks=0)
         print("Done.")
         return self._transcribe_frames(frames, mode=mode)
 
@@ -274,17 +329,14 @@ class STT:
 
         if log:
             print("Recording... Press key again to stop.")
-        frames, recorded = [], 0
-        while True:
-            data = self.stream.read(self.chunk, exception_on_overflow=False)
-            frames.append(data)
-            recorded += 1
-            if recorded < self.min_record_chunks:
-                continue
+        stopped_announced = False
+
+        def stop_condition(_: dict[str, Any]) -> bool:
+            nonlocal stopped_announced
             if kb.is_pressed(key):
                 while kb.is_pressed(key):
                     time.sleep(0.01)
-                if log:
+                if log and not stopped_announced:
                     print("Stopped.")
                 break
         return self._transcribe_frames(frames, mode=mode)
@@ -298,18 +350,28 @@ class STT:
         triggered, silence, recorded = False, 0, 0
         if log:
             print("Listening...")
-        while True:
-            data = self.stream.read(self.chunk, exception_on_overflow=False)
-            is_speech = self.vad.is_speech(data, self.rate)
+        started_announced = False
+        ended_announced = False
 
-            if not triggered:
+        def on_chunk(data: bytes, _frames: list[bytes], _ctx: dict[str, Any]):
+            nonlocal started_announced
+            is_speech = self.vad.is_speech(data, self.rate)
+            if not state["triggered"]:
                 ring.append(data)
                 if is_speech:
-                    triggered = True
-                    frames.extend(ring)
-                    ring.clear()
-                    if log:
+                    state["triggered"] = True
+                    state["silence"] = 0
+                    if log and not started_announced:
                         print("Speech started.")
+                        started_announced = True
+                    buffered = list(ring)
+                    ring.clear()
+                    return buffered
+                return []
+
+            state["recorded"] += 1
+            if is_speech:
+                state["silence"] = 0
             else:
                 frames.append(data)
                 recorded += 1
@@ -378,21 +440,27 @@ class STT:
                         break
                 return self._transcribe_frames(frames, mode=mode)
 
-        try:
-            bob = ""
+        if log:
+            print("Recording... Press key again to stop.")
 
-            def caller(obj: Future):
-                global bob
-                bob = obj.result()
+        stopped_announced = False
 
-            thr = ThreadPoolExecutor(max_workers=1).submit(go)
-            thr.add_done_callback(caller)
+        def stop_condition(_: dict[str, Any]) -> bool:
+            nonlocal stopped_announced
+            should_stop: bool
+            if isinstance(callback_or_bool, bool):
+                should_stop = callback_or_bool
+            else:
+                should_stop = bool(callback_or_bool())
+            if should_stop:
+                if log and not stopped_announced:
+                    print("Stopped.")
+                    stopped_announced = True
+                return True
+            return False
 
-        except Exception as e:
-            print(e)
-
-        finally:
-            return bob
+        frames = self._collect_frames(stop_condition=stop_condition)
+        return self._transcribe_frames(frames)
 
     def transcribe_file(
         self,
