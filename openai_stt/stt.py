@@ -338,7 +338,11 @@ class STT:
                     time.sleep(0.01)
                 if log and not stopped_announced:
                     print("Stopped.")
-                break
+                    stopped_announced = True
+                return True
+            return False
+
+        frames = self._collect_frames(stop_condition=stop_condition)
         return self._transcribe_frames(frames, mode=mode)
 
     def record_with_vad(
@@ -346,8 +350,8 @@ class STT:
         log: bool = False,
         mode: Literal["faster-whisper", "whisper", "api"] | None = None,
     ) -> str:
-        frames, ring = [], collections.deque(maxlen=self.preroll_chunks)
-        triggered, silence, recorded = False, 0, 0
+        ring: collections.deque[bytes] = collections.deque(maxlen=self.preroll_chunks)
+        state = {"triggered": False, "silence": 0, "recorded": 0}
         if log:
             print("Listening...")
         started_announced = False
@@ -361,6 +365,7 @@ class STT:
                 if is_speech:
                     state["triggered"] = True
                     state["silence"] = 0
+                    state["recorded"] = len(ring)
                     if log and not started_announced:
                         print("Speech started.")
                         started_announced = True
@@ -373,19 +378,23 @@ class STT:
             if is_speech:
                 state["silence"] = 0
             else:
-                frames.append(data)
-                recorded += 1
-                if is_speech:
-                    silence = 0
-                else:
-                    silence += 1
-                    if (
-                        recorded >= self.min_record_chunks
-                        and silence > self.tail_silence_chunks
-                    ):
-                        if log:
-                            print("Speech ended.")
-                        break
+                state["silence"] += 1
+            return data
+
+        def stop_condition(_: dict[str, Any]) -> bool:
+            nonlocal ended_announced
+            if not state["triggered"]:
+                return False
+            if state["recorded"] < self.min_record_chunks:
+                return False
+            if state["silence"] > self.tail_silence_chunks:
+                if log and not ended_announced:
+                    print("Speech ended.")
+                    ended_announced = True
+                return True
+            return False
+
+        frames = self._collect_frames(on_chunk=on_chunk, stop_condition=stop_condition)
         return self._transcribe_frames(frames, mode=mode)
 
     def record_with_callback_or_bool(
@@ -394,51 +403,15 @@ class STT:
         log: bool = False,
         mode: Literal["faster-whisper", "whisper", "api"] | None = None,
     ) -> str:
-        if isinstance(callback_or_bool, bool):
+        def evaluate_callback() -> bool:
+            if isinstance(callback_or_bool, bool):
+                return callback_or_bool
+            return bool(callback_or_bool())
 
-            def go():
-                if log:
-                    print(f"Waiting for callback ...")
+        if log:
+            print("Waiting for callback ...")
 
-                wait_until(callback_or_bool)
-
-                if log:
-                    print("Recording... Press key again to stop.")
-                frames, recorded = [], 0
-                while True:
-                    data = self.stream.read(self.chunk, exception_on_overflow=False)
-                    frames.append(data)
-                    recorded += 1
-                    if recorded < self.min_record_chunks:
-                        continue
-                    if callback_or_bool:
-                        if log:
-                            print("Stopped.")
-                        break
-                return self._transcribe_frames(frames, mode=mode)
-
-        else:
-
-            def go():
-                if log:
-                    print(f"Waiting for callback ...")
-
-                wait_until(callback_or_bool)
-
-                if log:
-                    print("Recording... Press key again to stop.")
-                frames, recorded = [], 0
-                while True:
-                    data = self.stream.read(self.chunk, exception_on_overflow=False)
-                    frames.append(data)
-                    recorded += 1
-                    if recorded < self.min_record_chunks:
-                        continue
-                    if callback_or_bool:
-                        if log:
-                            print("Stopped.")
-                        break
-                return self._transcribe_frames(frames, mode=mode)
+        wait_until(evaluate_callback)
 
         if log:
             print("Recording... Press key again to stop.")
@@ -447,20 +420,15 @@ class STT:
 
         def stop_condition(_: dict[str, Any]) -> bool:
             nonlocal stopped_announced
-            should_stop: bool
-            if isinstance(callback_or_bool, bool):
-                should_stop = callback_or_bool
-            else:
-                should_stop = bool(callback_or_bool())
-            if should_stop:
-                if log and not stopped_announced:
-                    print("Stopped.")
-                    stopped_announced = True
-                return True
-            return False
+            if evaluate_callback():
+                return False
+            if log and not stopped_announced:
+                print("Stopped.")
+                stopped_announced = True
+            return True
 
         frames = self._collect_frames(stop_condition=stop_condition)
-        return self._transcribe_frames(frames)
+        return self._transcribe_frames(frames, mode=mode)
 
     def transcribe_file(
         self,
