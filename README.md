@@ -11,4 +11,5 @@ Speech-to-Text tool using [Whisper](https://github.com/openai/whisper), PyAudio,
 
 ## Installation
 ```bash
-pip install .
+pip install stt
+uv add stt
