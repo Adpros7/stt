@@ -63,6 +63,9 @@ class STT:
         preroll_ms: int = 300,
         tail_silence_ms: int = 600,
         min_record_ms: int = 400,
+        api_key: str | None = None,
+        api_model: str | None = None,
+        default_transcription_mode: Literal["faster-whisper", "whisper", "api"] | None = None,
     ):
         assert chunk_duration_ms in (10, 20, 30)
         self.rate = 16000
@@ -85,23 +88,56 @@ class STT:
         # vad
         self.vad = webrtcvad.Vad(aggressive)
 
-        # model
-        self.backend = "faster" if _USE_FASTER else "whisper"
-        if self.backend == "faster":
-            self.model = FWModel(
-                model,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=max(2, os.cpu_count() or 4),
-                download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
-            )
+        # model + clients
+        remote_only_models = {
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe",
+        }
+        self._local_model = None
+        self.client: OpenAI | None = None
+        self._api_model_name = api_model or "whisper-1"
+
+        resolved_key = None
+        if isinstance(api_key, str) and api_key:
+            resolved_key = api_key
+        elif api_key is None:
+            env_key = os.getenv("OPENAI_API_KEY")
+            if env_key:
+                resolved_key = env_key
+        if resolved_key:
+            self.client = OpenAI(api_key=resolved_key)
+
+        if model in remote_only_models:
+            self.backend = "api"
+            self._default_transcription_mode = "api"
+            if api_model:
+                self._api_model_name = api_model
+            else:
+                self._api_model_name = model
         else:
-            device = "cuda" if (_HAS_CUDA) else "cpu"
-            self.model = whisper.load_model(
-                model,
-                download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
-                device=device,
+            self.backend = "faster" if _USE_FASTER else "whisper"
+            self._default_transcription_mode = (
+                "faster-whisper" if self.backend == "faster" else "whisper"
             )
+            if self.backend == "faster":
+                self._local_model = FWModel(
+                    model,
+                    device="cpu",
+                    compute_type="int8",
+                    cpu_threads=max(2, os.cpu_count() or 4),
+                    download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
+                )
+            else:
+                device = "cuda" if (_HAS_CUDA) else "cpu"
+                self._local_model = whisper.load_model(
+                    model,
+                    download_root=os.path.join(tempfile.gettempdir(), "whisper_models"),
+                    device=device,
+                )
+
+        if default_transcription_mode is not None:
+            self._default_transcription_mode = default_transcription_mode
 
     def close(self):
         try:
@@ -124,8 +160,10 @@ class STT:
 
     def _fw_transcribe_file(self, filename: str) -> str:
         # Some versions support progress_bar, some don't. Try then fall back.
+        if self._local_model is None:
+            raise RuntimeError("Faster-whisper backend is not initialized.")
         try:
-            segments, _ = self.model.transcribe(
+            segments, _ = self._local_model.transcribe(
                 filename,
                 beam_size=1,
                 temperature=0.0,
@@ -133,14 +171,16 @@ class STT:
                 language="en",
             )
         except TypeError:
-            segments, _ = self.model.transcribe(
+            segments, _ = self._local_model.transcribe(
                 filename, beam_size=1, temperature=0.0, vad_filter=False, language="en"
             )
         return "".join(seg.text for seg in segments).strip()  # type: ignore
 
     def _whisper_transcribe_file(self, filename: str) -> str:
         # Only use options the real whisper accepts
-        result = self.model.transcribe(
+        if self._local_model is None:
+            raise RuntimeError("Whisper backend is not initialized.")
+        result = self._local_model.transcribe(
             filename,
             temperature=0.0,
             condition_on_previous_text=False,
@@ -149,14 +189,55 @@ class STT:
         )
         return result.get("text", "").strip()  # type: ignore
 
-    def _transcribe_frames(self, frames) -> str:
+    def _transcribe_file_with_mode(
+        self,
+        filename: str,
+        mode: Literal["faster-whisper", "whisper", "api"],
+    ) -> str:
+        if mode == "faster-whisper":
+            if self.backend != "faster" or self._local_model is None:
+                raise RuntimeError("Faster-whisper mode requested but not available.")
+            return self._fw_transcribe_file(filename)
+        if mode == "whisper":
+            if self.backend != "whisper" or self._local_model is None:
+                raise RuntimeError("Whisper mode requested but the whisper backend is not available.")
+            return self._whisper_transcribe_file(filename)
+        if mode == "api":
+            if getattr(self, "client", None) is None:
+                raise RuntimeError(
+                    "API transcription requested but no OpenAI client is initialized. "
+                    "Provide an API key or set OPENAI_API_KEY before selecting 'api'."
+                )
+            with open(filename, "rb") as audio_file:
+                response = self.client.audio.transcriptions.create(  # type: ignore[attr-defined]
+                    model=self._api_model_name,
+                    file=audio_file,
+                )
+            text = getattr(response, "text", None)
+            if text is None and isinstance(response, dict):  # type: ignore[redundant-expr]
+                text = response.get("text")
+            if text is None:
+                raise RuntimeError("Transcription response missing text field from API.")
+            return text.strip()
+        raise ValueError(f"Unknown transcription mode: {mode}")
+
+    def _resolve_transcription_mode(
+        self, mode: Literal["faster-whisper", "whisper", "api"] | None
+    ) -> Literal["faster-whisper", "whisper", "api"]:
+        if mode is not None:
+            return mode
+        return getattr(self, "_default_transcription_mode", "whisper")
+
+    def _transcribe_frames(
+        self,
+        frames,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
+    ) -> str:
         if not frames:
             return ""
         filename = self._save_wav_temp(frames)
-        if self.backend == "faster":
-            return self._fw_transcribe_file(filename)
-        else:
-            return self._whisper_transcribe_file(filename)
+        resolved_mode = self._resolve_transcription_mode(mode)
+        return self._transcribe_file_with_mode(filename, resolved_mode)
 
     def _collect_frames(
         self,
@@ -221,15 +302,25 @@ class STT:
 
     # ---------- public APIs ----------
 
-    def record_for_seconds(self, duration=5, log: bool = False) -> str:
+    def record_for_seconds(
+        self,
+        duration=5,
+        log: bool = False,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
+    ) -> str:
         if log:
             print(f"Recording for {duration} seconds...")
         total_chunks = max(1, int((duration * 1000) / self.chunk_ms))
         frames = self._collect_frames(max_read_chunks=total_chunks, min_appended_chunks=0)
         print("Done.")
-        return self._transcribe_frames(frames)
+        return self._transcribe_frames(frames, mode=mode)
 
-    def record_with_keyboard(self, key="space", log: bool = False) -> str:
+    def record_with_keyboard(
+        self,
+        key="space",
+        log: bool = False,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
+    ) -> str:
         if log:
             print(f"Press {key} to start. Release to begin recording.")
         kb.wait(key)
@@ -247,16 +338,16 @@ class STT:
                     time.sleep(0.01)
                 if log and not stopped_announced:
                     print("Stopped.")
-                    stopped_announced = True
-                return True
-            return False
+                break
+        return self._transcribe_frames(frames, mode=mode)
 
-        frames = self._collect_frames(stop_condition=stop_condition)
-        return self._transcribe_frames(frames)
-
-    def record_with_vad(self, log: bool = False) -> str:
-        ring = collections.deque(maxlen=self.preroll_chunks)
-        state = {"triggered": False, "silence": 0, "recorded": 0}
+    def record_with_vad(
+        self,
+        log: bool = False,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
+    ) -> str:
+        frames, ring = [], collections.deque(maxlen=self.preroll_chunks)
+        triggered, silence, recorded = False, 0, 0
         if log:
             print("Listening...")
         started_announced = False
@@ -282,37 +373,72 @@ class STT:
             if is_speech:
                 state["silence"] = 0
             else:
-                state["silence"] += 1
-            return [data]
-
-        def stop_condition(_: dict[str, Any]) -> bool:
-            nonlocal ended_announced
-            if not state["triggered"]:
-                return False
-            if (
-                state["recorded"] >= self.min_record_chunks
-                and state["silence"] > self.tail_silence_chunks
-            ):
-                if log and not ended_announced:
-                    print("Speech ended.")
-                    ended_announced = True
-                return True
-            return False
-
-        frames = self._collect_frames(
-            min_appended_chunks=0,
-            on_chunk=on_chunk,
-            stop_condition=stop_condition,
-        )
-        return self._transcribe_frames(frames)
+                frames.append(data)
+                recorded += 1
+                if is_speech:
+                    silence = 0
+                else:
+                    silence += 1
+                    if (
+                        recorded >= self.min_record_chunks
+                        and silence > self.tail_silence_chunks
+                    ):
+                        if log:
+                            print("Speech ended.")
+                        break
+        return self._transcribe_frames(frames, mode=mode)
 
     def record_with_callback_or_bool(
-        self, callback_or_bool: Callable[..., Any] | bool, log: bool = False
+        self,
+        callback_or_bool: Callable[..., Any] | bool,
+        log: bool = False,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
     ) -> str:
-        if log:
-            print(f"Waiting for callback ...")
+        if isinstance(callback_or_bool, bool):
 
-        wait_until(callback_or_bool)
+            def go():
+                if log:
+                    print(f"Waiting for callback ...")
+
+                wait_until(callback_or_bool)
+
+                if log:
+                    print("Recording... Press key again to stop.")
+                frames, recorded = [], 0
+                while True:
+                    data = self.stream.read(self.chunk, exception_on_overflow=False)
+                    frames.append(data)
+                    recorded += 1
+                    if recorded < self.min_record_chunks:
+                        continue
+                    if callback_or_bool:
+                        if log:
+                            print("Stopped.")
+                        break
+                return self._transcribe_frames(frames, mode=mode)
+
+        else:
+
+            def go():
+                if log:
+                    print(f"Waiting for callback ...")
+
+                wait_until(callback_or_bool)
+
+                if log:
+                    print("Recording... Press key again to stop.")
+                frames, recorded = [], 0
+                while True:
+                    data = self.stream.read(self.chunk, exception_on_overflow=False)
+                    frames.append(data)
+                    recorded += 1
+                    if recorded < self.min_record_chunks:
+                        continue
+                    if callback_or_bool:
+                        if log:
+                            print("Stopped.")
+                        break
+                return self._transcribe_frames(frames, mode=mode)
 
         if log:
             print("Recording... Press key again to stop.")
@@ -336,29 +462,13 @@ class STT:
         frames = self._collect_frames(stop_condition=stop_condition)
         return self._transcribe_frames(frames)
 
-    def transcribe_file(self, audio_file: str) -> str:
-        if self.backend == "faster":
-            return self._fw_transcribe_file(audio_file)
-        else:
-            return self._whisper_transcribe_file(audio_file)
-
-
-class API_STT(STT):
-
-    def __init__(
+    def transcribe_file(
         self,
-        api_key: str | None = None,
-        model: Literal[
-            "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"
-        ] = "whisper-1",
-    ):
-        key = api_key if isinstance(api_key, str) else os.getenv("OPENAI_API_KEY")
-        if key is None:
-            raise Exception("Missing OPENAI_API_KEY")
-        self.client = OpenAI(api_key=key)
-        self.model = model
-
-
+        audio_file: str,
+        mode: Literal["faster-whisper", "whisper", "api"] | None = None,
+    ) -> str:
+        resolved_mode = self._resolve_transcription_mode(mode)
+        return self._transcribe_file_with_mode(audio_file, resolved_mode)
 if __name__ == "__main__":
     stt = STT(model="base")  # use "tiny.en" if your CPU is weak
     try:
