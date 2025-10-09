@@ -19,7 +19,19 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 for name in ["whisper", "transformers", "numba"]:
     logging.getLogger(name).setLevel(logging.ERROR)
 
+
 # Try faster-whisper first
+def cuda_available() -> bool:
+    import ctypes
+
+    for name in ("nvcuda.dll", "libcuda.so", "libcuda.dylib"):
+        try:
+            return ctypes.CDLL(name).cuInit(0) == 0
+        except Exception:
+            continue
+    return False
+
+
 _USE_FASTER = True
 try:
     from faster_whisper import WhisperModel as FWModel  # type: ignore
@@ -28,9 +40,8 @@ except Exception:
     import whisper
 
     try:
-        import torch
 
-        _HAS_CUDA = torch.cuda.is_available()
+        _HAS_CUDA = cuda_available()
     except Exception:
         _HAS_CUDA = False
 

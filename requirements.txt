@@ -4,6 +4,5 @@ keyboard
 syntaxmod
 whisper
 faster-whisper
-torch
 openai
 setuptools
